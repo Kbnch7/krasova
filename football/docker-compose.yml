@@ -1,0 +1,150 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: football_postgres
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    environment:
+      POSTGRES_USER: football
+      POSTGRES_PASSWORD: football
+      POSTGRES_DB: football
+    ports:
+      - "5436:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/init-replication.sql:/docker-entrypoint-initdb.d/init-replication.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U football -d football"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres_replica:
+    image: postgres:16
+    container_name: football_postgres_replica
+    entrypoint: ["/replica-entrypoint.sh"]
+    environment:
+      PGPASSWORD: replicator
+    ports:
+      - "5437:5432"
+    volumes:
+      - pgdata_replica:/var/lib/postgresql/data
+      - ./postgres/replica-entrypoint.sh:/replica-entrypoint.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U football -d football"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 600s
+
+  shard_0:
+    image: postgres:16
+    container_name: football_shard_0
+    environment:
+      POSTGRES_USER: football
+      POSTGRES_PASSWORD: football
+      POSTGRES_DB: football
+    ports:
+      - "5440:5432"
+    volumes:
+      - pgdata_shard_0:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U football -d football"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  shard_1:
+    image: postgres:16
+    container_name: football_shard_1
+    environment:
+      POSTGRES_USER: football
+      POSTGRES_PASSWORD: football
+      POSTGRES_DB: football
+    ports:
+      - "5441:5432"
+    volumes:
+      - pgdata_shard_1:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U football -d football"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  shard_2:
+    image: postgres:16
+    container_name: football_shard_2
+    environment:
+      POSTGRES_USER: football
+      POSTGRES_PASSWORD: football
+      POSTGRES_DB: football
+    ports:
+      - "5442:5432"
+    volumes:
+      - pgdata_shard_2:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U football -d football"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: .
+    container_name: football_backend
+    environment:
+      DATABASE_URL: postgresql://football:football@postgres:5432/football
+      REPLICA_DATABASE_URL: postgresql://football:football@postgres_replica:5432/football
+      SHARD_URLS: postgresql://football:football@shard_0:5432/football,postgresql://football:football@shard_1:5432/football,postgresql://football:football@shard_2:5432/football
+      SHARD_STRATEGY: ${SHARD_STRATEGY:-ring}
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres_replica:
+        condition: service_healthy
+      shard_0:
+        condition: service_healthy
+      shard_1:
+        condition: service_healthy
+      shard_2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 120
+    volumes:
+      - ./app:/app/app
+      - ./sql:/app/sql
+      - ./scripts:/app/scripts
+
+  scheduler:
+    build: .
+    container_name: football_scheduler
+    command: python -m app.jobs.scheduler
+    environment:
+      DATABASE_URL: postgresql://football:football@postgres:5432/football
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./app:/app/app
+
+volumes:
+  pgdata:
+  pgdata_replica:
+  pgdata_shard_0:
+  pgdata_shard_1:
+  pgdata_shard_2:
